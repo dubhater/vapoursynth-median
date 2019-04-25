@@ -35,8 +35,11 @@ struct MedianData;
 
 
 static inline void sortPixels(uint8_t &a, uint8_t &b) {
-    if (a > b)
-        std::swap(a, b);
+    uint8_t min = std::min(a, b);
+    uint8_t max = std::max(a, b);
+
+    a = min;
+    b = max;
 }
 
 
