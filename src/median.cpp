@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -34,28 +35,74 @@ static const char *filter_names[3] = {
 struct MedianData;
 
 
-static inline void sortPixels(uint8_t &a, uint8_t &b) {
-    uint8_t min = std::min(a, b);
-    uint8_t max = std::max(a, b);
+template <typename PixelType>
+static double compareFrames(const VSFrameRef *src1, const VSFrameRef *src2, int points, const VSAPI *vsapi) {
+    const PixelType *src1p = (const PixelType *)vsapi->getReadPtr(src1, 0);
+    const PixelType *src2p = (const PixelType *)vsapi->getReadPtr(src2, 0);
+
+    int width = vsapi->getFrameWidth(src1, 0);
+    int height = vsapi->getFrameHeight(src1, 0);
+    int stride = vsapi->getStride(src1, 0) / sizeof(PixelType);
+    const VSFormat *format = vsapi->getFrameFormat(src1);
+
+    int length = width * height;
+
+    if (points < 1 || points > length)
+        points = length;
+
+    int step = length / points;
+
+    typedef typename std::conditional<sizeof(PixelType) == 4, float, int64_t>::type int64_or_float;
+
+    int64_or_float sum = 0;
+    int effective_points = 0;
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x += step) {
+            sum += std::abs(src1p[x] - src2p[x]);
+            effective_points++;
+        }
+
+        src1p += stride;
+        src2p += stride;
+    }
+
+    int pixel_max = format->sampleType == stFloat ? 1
+                                                  : (1 << format->bitsPerSample) - 1;
+
+    double difference = (100.0 * sum) / (pixel_max * (double)effective_points);
+
+    return 100.0 - difference;
+}
+
+
+template <typename PixelType>
+static inline void sortPixels(PixelType &a, PixelType &b) {
+    PixelType min = std::min(a, b);
+    PixelType max = std::max(a, b);
 
     a = min;
     b = max;
 }
 
 
-template <int depth>
-static void processPlaneFast(const uint8_t *srcp[MAX_DEPTH], uint8_t *dstp, int width, int height, int stride, const MedianData *) {
+template <typename PixelType, int depth>
+static void processPlaneFast(const uint8_t *srcp8[MAX_DEPTH], uint8_t *dstp8, int width, int height, int stride, const MedianData *) {
+    const PixelType **srcp = (const PixelType **)srcp8;
+    PixelType *dstp = (PixelType *)dstp8;
+    stride /= sizeof(PixelType);
+
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            uint8_t v0 = srcp[0][x];
-            uint8_t v1 = srcp[1][x];
-            uint8_t v2 = srcp[2][x];
-            uint8_t v3 = srcp[3][x];
-            uint8_t v4 = srcp[4][x];
-            uint8_t v5 = srcp[5][x];
-            uint8_t v6 = srcp[6][x];
-            uint8_t v7 = srcp[7][x];
-            uint8_t v8 = srcp[8][x];
+            PixelType v0 = srcp[0][x];
+            PixelType v1 = srcp[1][x];
+            PixelType v2 = srcp[2][x];
+            PixelType v3 = srcp[3][x];
+            PixelType v4 = srcp[4][x];
+            PixelType v5 = srcp[5][x];
+            PixelType v6 = srcp[6][x];
+            PixelType v7 = srcp[7][x];
+            PixelType v8 = srcp[8][x];
 
             if (depth == 3) {
                 dstp[x] = std::max(std::min(v0, v1),
@@ -113,19 +160,27 @@ struct MedianData {
     int depth;
     int blend;
 
-    decltype(processPlaneFast<3>) *process_plane;
+    decltype(processPlaneFast<uint8_t, 3>) *process_plane;
+    decltype(compareFrames<uint8_t>) *compare_frames;
 };
 
 
-static void processPlaneSlow(const uint8_t *srcp[MAX_DEPTH], uint8_t *dstp, int width, int height, int stride, const MedianData *d) {
+template <typename PixelType>
+static void processPlaneSlow(const uint8_t *srcp8[MAX_DEPTH], uint8_t *dstp8, int width, int height, int stride, const MedianData *d) {
+    const PixelType **srcp = (const PixelType **)srcp8;
+    PixelType *dstp = (PixelType *)dstp8;
+    stride /= sizeof(PixelType);
+
+    typedef typename std::conditional<sizeof(PixelType) == 4, float, int>::type int_or_float;
+
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            uint8_t values[MAX_DEPTH];
+            PixelType values[MAX_DEPTH];
 
             for (int i = 0; i < d->depth; i++)
                 values[i] = srcp[i][x];
 
-            int sum = 0;
+            int_or_float sum = 0;
 
             if (d->blend != d->depth)
                 std::sort(values, values + d->depth);
@@ -140,40 +195,6 @@ static void processPlaneSlow(const uint8_t *srcp[MAX_DEPTH], uint8_t *dstp, int 
             srcp[i] += stride;
         dstp += stride;
     }
-}
-
-
-static double compareFrames(const VSFrameRef *src1, const VSFrameRef *src2, int points, const VSAPI *vsapi) {
-    const uint8_t *src1p = vsapi->getReadPtr(src1, 0);
-    const uint8_t *src2p = vsapi->getReadPtr(src2, 0);
-
-    int width = vsapi->getFrameWidth(src1, 0);
-    int height = vsapi->getFrameHeight(src1, 0);
-    int stride = vsapi->getStride(src1, 0);
-
-    int length = width * height;
-
-    if (points < 1 || points > length)
-        points = length;
-
-    int step = length / points;
-
-    int64_t sum = 0;
-    int effective_points = 0;
-
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x += step) {
-            sum += std::abs(src1p[x] - src2p[x]);
-            effective_points++;
-        }
-
-        src1p += stride;
-        src2p += stride;
-    }
-
-    double difference = (100.0 * sum) / (255.0 * effective_points);
-
-    return 100.0 - difference;
 }
 
 
@@ -228,7 +249,7 @@ static const VSFrameRef *VS_CC MedianGetFrame(int n, int activationReason, void 
                 for (int j = -radius; j <= radius; j++) {
                     const VSFrameRef *temp = vsapi->getFrameFilter(std::max(0, n + j), d->clips[i], frameCtx);
 
-                    double similarity = compareFrames(src[0], temp, d->samples, vsapi);
+                    double similarity = d->compare_frames(src[0], temp, d->samples, vsapi);
 
                     if (similarity > best[i]) {
                         best[i] = similarity;
@@ -330,7 +351,7 @@ static void VS_CC MedianCreate(const VSMap *in, VSMap *out, void *userData, VSCo
 
     d.filter_type = (MedianFilterTypes)(intptr_t)userData;
 
-#define MAX_ERROR 100
+#define MAX_ERROR 110
     char error[MAX_ERROR + 1] = { 0 };
 
     int err;
@@ -414,10 +435,13 @@ static void VS_CC MedianCreate(const VSMap *in, VSMap *out, void *userData, VSCo
     d.vi = vsapi->getVideoInfo(d.clips[0]);
 
 
-    if (d.vi->width == 0 || d.vi->height == 0 || !d.vi->format || d.vi->format->bitsPerSample > 8) {
+    if (d.vi->width == 0 || d.vi->height == 0 ||
+            !d.vi->format ||
+            (d.vi->format->sampleType == stInteger && d.vi->format->bitsPerSample > 16) ||
+            (d.vi->format->sampleType == stFloat && d.vi->format->bitsPerSample != 32)) {
         for (int j = 0; j < num_clips; j++)
             vsapi->freeNode(d.clips[j]);
-        snprintf(error, MAX_ERROR, "%s: %s", filter_names[d.filter_type], "clips must be 8 bit with constant format and dimensions.");
+        snprintf(error, MAX_ERROR, "%s: %s", filter_names[d.filter_type], "clips must be 8..16 bit integer or 32 bit float, with constant format and dimensions.");
         vsapi->setError(out, error);
         return;
     }
@@ -475,21 +499,47 @@ static void VS_CC MedianCreate(const VSMap *in, VSMap *out, void *userData, VSCo
 
     d.blend = d.depth - d.low - d.high;
 
-
-    bool fast_processing = d.blend == 1 && d.low == d.high && d.depth <= MAX_OPT;
+    bool fast_processing = d.blend == 1 && d.low == d.high && d.depth <= MAX_OPT && d.depth % 2 == 1;
 
     if (fast_processing) {
-        if (d.depth == 3)
-            d.process_plane = processPlaneFast<3>;
-        else if (d.depth == 5)
-            d.process_plane = processPlaneFast<5>;
-        else if (d.depth == 7)
-            d.process_plane = processPlaneFast<7>;
-        else if (d.depth == 9)
-            d.process_plane = processPlaneFast<9>;
+        decltype(processPlaneFast<uint8_t, 3>) *fast_functions[3][5] = { {
+            processPlaneFast<uint8_t, 3>,
+            processPlaneFast<uint8_t, 5>,
+            processPlaneFast<uint8_t, 7>,
+            processPlaneFast<uint8_t, 9>,
+                                                                         }, {
+            processPlaneFast<uint16_t, 3>,
+            processPlaneFast<uint16_t, 5>,
+            processPlaneFast<uint16_t, 7>,
+            processPlaneFast<uint16_t, 9>,
+                                                                         }, {
+            processPlaneFast<float, 3>,
+            processPlaneFast<float, 5>,
+            processPlaneFast<float, 7>,
+            processPlaneFast<float, 9>,
+        } };
+
+        if (d.vi->format->bitsPerSample == 8)
+            d.process_plane = fast_functions[0][d.depth / 2 - 1];
+        else if (d.vi->format->bitsPerSample <= 16)
+            d.process_plane = fast_functions[1][d.depth / 2 - 1];
+        else if (d.vi->format->bitsPerSample == 32)
+            d.process_plane = fast_functions[2][d.depth / 2 - 1];
     } else {
-        d.process_plane = processPlaneSlow;
+        if (d.vi->format->bitsPerSample == 8)
+            d.process_plane = processPlaneSlow<uint8_t>;
+        else if (d.vi->format->bitsPerSample <= 16)
+            d.process_plane = processPlaneSlow<uint16_t>;
+        else if (d.vi->format->bitsPerSample == 32)
+            d.process_plane = processPlaneSlow<float>;
     }
+
+    if (d.vi->format->bitsPerSample == 8)
+        d.compare_frames = compareFrames<uint8_t>;
+    else if (d.vi->format->bitsPerSample <= 16)
+        d.compare_frames = compareFrames<uint16_t>;
+    else if (d.vi->format->bitsPerSample == 32)
+        d.compare_frames = compareFrames<float>;
 
 
     MedianData *data = (MedianData *)malloc(sizeof(d));

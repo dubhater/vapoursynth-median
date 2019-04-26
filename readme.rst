@@ -19,8 +19,8 @@ Usage
 
 Parameters:
     *clips*
-        An odd number of 3 to 25 clips to process. They must have constant format and dimensions, 8 bit
-        integer sample type, and they all must have the same format and dimensions.
+        An odd number of 3 to 25 clips to process. They must have constant format and dimensions, 8..16 bit
+        integer or 32 bit float samples, and they all must have the same format and dimensions.
 
     *sync*
         Sync temporal search radius.
@@ -55,8 +55,8 @@ Parameters:
 
 Parameters:
     *clip*
-        A clip to process. It must have constant format and dimensions and 8 bit
-        integer sample type.
+        A clip to process. It must have constant format and dimensions and 8..16 bit
+        integer or 32 bit float samples.
 
     *radius*
         Temporal radius. Must be between 1 and 12.
@@ -82,8 +82,8 @@ Parameters:
 
 Parameters:
     *clips*
-        3 to 25 clips to process. They must have constant format and dimensions, 8 bit
-        integer sample type, and they all must have the same format and dimensions.
+        3 to 25 clips to process. They must have constant format and dimensions, 8..16 bit
+        integer or 32 bit float samples, and they all must have the same format and dimensions.
 
     *low*
         Number of the lowest values to discard after sorting.
