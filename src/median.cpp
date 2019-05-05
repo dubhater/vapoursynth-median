@@ -32,6 +32,12 @@ static const char *filter_names[3] = {
 };
 
 
+enum BlendMethods {
+    BlendFixedSetOfValues,
+    BlendClosestToMedianValues
+};
+
+
 struct MedianData;
 
 
@@ -165,7 +171,17 @@ struct MedianData {
 };
 
 
-template <typename PixelType>
+static inline bool closeEnoughToEqual(float a, float b) {
+    return std::abs(a - b) < 0.00001f;
+}
+
+
+static inline bool closeEnoughToEqual(int a, int b) {
+    return a == b;
+}
+
+
+template <typename PixelType, BlendMethods blend_method>
 static void processPlaneSlow(const uint8_t *srcp8[MAX_DEPTH], uint8_t *dstp8, int width, int height, int stride, const MedianData *d) {
     const PixelType **srcp = (const PixelType **)srcp8;
     PixelType *dstp = (PixelType *)dstp8;
@@ -185,8 +201,48 @@ static void processPlaneSlow(const uint8_t *srcp8[MAX_DEPTH], uint8_t *dstp8, in
             if (d->blend != d->depth)
                 std::sort(values, values + d->depth);
 
-            for (int i = d->low; i < d->low + d->blend; i++)
-                sum += values[i];
+            if (blend_method == BlendFixedSetOfValues) {
+                for (int i = d->low; i < d->low + d->blend; i++)
+                    sum += values[i];
+            } else if (blend_method == BlendClosestToMedianValues) {
+                int num_blended = 1;
+                int next_smaller_value = (d->depth >> 1) - 1;
+                int next_greater_value = (d->depth >> 1) + 1;
+                int_or_float median = values[d->depth >> 1];
+                sum = median;
+
+                while (num_blended < d->blend && next_smaller_value >= 0 && next_greater_value < d->depth) {
+                    int_or_float smaller = values[next_smaller_value];
+                    int_or_float greater = values[next_greater_value];
+                    int_or_float diff_smaller = median - smaller;
+                    int_or_float diff_greater = greater - median;
+
+                    if (closeEnoughToEqual(diff_smaller, diff_greater)) {
+                        sum += smaller + greater;
+                        next_smaller_value--;
+                        next_greater_value++;
+                        num_blended += 2;
+                    } else if (diff_smaller < diff_greater) {
+                        sum += smaller;
+                        next_smaller_value--;
+                        num_blended++;
+                    } else if (diff_greater < diff_smaller) {
+                        sum += greater;
+                        next_greater_value++;
+                        num_blended++;
+                    }
+                }
+
+                for (int i = next_smaller_value; num_blended < d->blend && i > 0; i--) {
+                    sum += values[i];
+                    num_blended++;
+                }
+
+                for (int i = next_greater_value; num_blended < d->blend && i < d->depth - 1; i++) {
+                    sum += values[i];
+                    num_blended++;
+                }
+            }
 
             dstp[x] = sum / d->blend;
         }
@@ -368,6 +424,10 @@ static void VS_CC MedianCreate(const VSMap *in, VSMap *out, void *userData, VSCo
     if (err)
         d.high = 1;
 
+    int closest = int64ToIntS(vsapi->propGetInt(in, "closest", 0, &err));
+    if (err)
+        closest = 0;
+
     d.sync = int64ToIntS(vsapi->propGetInt(in, "sync", 0, &err));
     if (err)
         d.sync = 0;
@@ -412,6 +472,12 @@ static void VS_CC MedianCreate(const VSMap *in, VSMap *out, void *userData, VSCo
 
         if (d.low + d.high >= num_clips) {
             snprintf(error, MAX_ERROR, "%s: %s", filter_names[d.filter_type], "low + high must be less than the number of clips.");
+            vsapi->setError(out, error);
+            return;
+        }
+
+        if (closest < 0 || closest > num_clips) {
+            snprintf(error, MAX_ERROR, "%s: %s", filter_names[d.filter_type], "closest must be between 0 and the number of clips.");
             vsapi->setError(out, error);
             return;
         }
@@ -497,7 +563,10 @@ static void VS_CC MedianCreate(const VSMap *in, VSMap *out, void *userData, VSCo
         d.depth = num_clips;
     }
 
-    d.blend = d.depth - d.low - d.high;
+    if (d.filter_type == MedianBlend && closest > 0)
+        d.blend = closest;
+    else
+        d.blend = d.depth - d.low - d.high;
 
     bool fast_processing = d.blend == 1 && d.low == d.high && d.depth <= MAX_OPT && d.depth % 2 == 1;
 
@@ -526,12 +595,21 @@ static void VS_CC MedianCreate(const VSMap *in, VSMap *out, void *userData, VSCo
         else if (d.vi->format->bitsPerSample == 32)
             d.process_plane = fast_functions[2][d.depth / 2 - 1];
     } else {
-        if (d.vi->format->bitsPerSample == 8)
-            d.process_plane = processPlaneSlow<uint8_t>;
-        else if (d.vi->format->bitsPerSample <= 16)
-            d.process_plane = processPlaneSlow<uint16_t>;
-        else if (d.vi->format->bitsPerSample == 32)
-            d.process_plane = processPlaneSlow<float>;
+        if (closest > 0 && closest != d.depth) {
+            if (d.vi->format->bitsPerSample == 8)
+                d.process_plane = processPlaneSlow<uint8_t, BlendClosestToMedianValues>;
+            else if (d.vi->format->bitsPerSample <= 16)
+                d.process_plane = processPlaneSlow<uint16_t, BlendClosestToMedianValues>;
+            else if (d.vi->format->bitsPerSample == 32)
+                d.process_plane = processPlaneSlow<float, BlendClosestToMedianValues>;
+        } else {
+            if (d.vi->format->bitsPerSample == 8)
+                d.process_plane = processPlaneSlow<uint8_t, BlendFixedSetOfValues>;
+            else if (d.vi->format->bitsPerSample <= 16)
+                d.process_plane = processPlaneSlow<uint16_t, BlendFixedSetOfValues>;
+            else if (d.vi->format->bitsPerSample == 32)
+                d.process_plane = processPlaneSlow<float, BlendFixedSetOfValues>;
+        }
     }
 
     if (d.vi->format->bitsPerSample == 8)
@@ -600,6 +678,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
                  "clips:clip[];"
                  "low:int:opt;"
                  "high:int:opt;"
+                 "closest:int:opt;"
                  "sync:int:opt;"
                  "samples:int:opt;"
                  "debug:int:opt;"

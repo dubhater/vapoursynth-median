@@ -77,7 +77,7 @@ Parameters:
 
 ::
 
-    median.MedianBlend(clip[] clips, [int low=1, int high=1, int sync=0, int samples=4096, bint debug=False, int[] planes=<all>])
+    median.MedianBlend(clip[] clips, [int low=1, int high=1, int closest=0, int sync=0, int samples=4096, bint debug=False, int[] planes=<all>])
 
 
 Parameters:
@@ -94,6 +94,13 @@ Parameters:
         Number of the highest values to discard after sorting.
 
         Default: 1.
+
+    *closest*
+        The number of values closest to the median to blend together, including the median itself.
+
+        If this parameter is greater than 1, *low* and *high* are ignored.
+
+        Default: 0, which means *high* and *low* are used instead.
 
     *sync*
         Sync temporal search radius.
