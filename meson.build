@@ -1,5 +1,5 @@
 project('Median', 'cpp',
-        version: '2',
+        version: '3',
         default_options: ['cpp_std=c++11', 'buildtype=release'],
         meson_version: '>=0.46')
 
