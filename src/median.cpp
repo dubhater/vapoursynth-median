@@ -206,39 +206,40 @@ static void processPlaneSlow(const uint8_t *srcp8[MAX_DEPTH], uint8_t *dstp8, in
                     sum += values[i];
             } else if (blend_method == BlendClosestToMedianValues) {
                 int num_blended = 1;
-                int next_smaller_value = (d->depth >> 1) - 1;
-                int next_greater_value = (d->depth >> 1) + 1;
-                int_or_float median = values[d->depth >> 1];
+                int median_index = d->depth >> 1;
+                int next_smaller_index = median_index - 1;
+                int next_greater_index = median_index + 1;
+                int_or_float median = values[median_index];
                 sum = median;
 
-                while (num_blended < d->blend && next_smaller_value >= 0 && next_greater_value < d->depth) {
-                    int_or_float smaller = values[next_smaller_value];
-                    int_or_float greater = values[next_greater_value];
+                while (num_blended < d->blend && next_smaller_index >= 0 && next_greater_index < d->depth) {
+                    int_or_float smaller = values[next_smaller_index];
+                    int_or_float greater = values[next_greater_index];
                     int_or_float diff_smaller = median - smaller;
                     int_or_float diff_greater = greater - median;
 
                     if (closeEnoughToEqual(diff_smaller, diff_greater)) {
                         sum += smaller + greater;
-                        next_smaller_value--;
-                        next_greater_value++;
+                        next_smaller_index--;
+                        next_greater_index++;
                         num_blended += 2;
                     } else if (diff_smaller < diff_greater) {
                         sum += smaller;
-                        next_smaller_value--;
+                        next_smaller_index--;
                         num_blended++;
                     } else if (diff_greater < diff_smaller) {
                         sum += greater;
-                        next_greater_value++;
+                        next_greater_index++;
                         num_blended++;
                     }
                 }
 
-                for (int i = next_smaller_value; num_blended < d->blend && i > 0; i--) {
+                for (int i = next_smaller_index; num_blended < d->blend && i > 0; i--) {
                     sum += values[i];
                     num_blended++;
                 }
 
-                for (int i = next_greater_value; num_blended < d->blend && i < d->depth - 1; i++) {
+                for (int i = next_greater_index; num_blended < d->blend && i < d->depth - 1; i++) {
                     sum += values[i];
                     num_blended++;
                 }
