@@ -219,10 +219,15 @@ static void processPlaneSlow(const uint8_t *srcp8[MAX_DEPTH], uint8_t *dstp8, in
                     int_or_float diff_greater = greater - median;
 
                     if (closeEnoughToEqual(diff_smaller, diff_greater)) {
-                        sum += smaller + greater;
-                        next_smaller_index--;
-                        next_greater_index++;
-                        num_blended += 2;
+                        if (median_index - next_smaller_index < next_greater_index - median_index) {
+                            sum += smaller;
+                            next_smaller_index--;
+                            num_blended++;
+                        } else {
+                            sum += greater;
+                            next_greater_index++;
+                            num_blended++;
+                        }
                     } else if (diff_smaller < diff_greater) {
                         sum += smaller;
                         next_smaller_index--;
